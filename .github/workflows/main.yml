@@ -1,0 +1,42 @@
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+
+netsh advfirewall firewall delete rule name="RDP-Zezer" 2>$null
+netsh advfirewall firewall add rule name="RDP-Zezer" dir=in action=allow protocol=TCP localport=3389
+
+Set-Service -Name TermService -StartupType Automatic
+Start-Service -Name TermService
+
+$securePass = ConvertTo-SecureString "GGG" -AsPlainText -Force
+if (-not (Get-LocalUser -Name "Zezer" -ErrorAction SilentlyContinue)) {
+    New-LocalUser -Name "Zezer" -Password $securePass -AccountNeverExpires
+    Add-LocalGroupMember -Group "Administrators" -Member "Zezer"
+    Add-LocalGroupMember -Group "Remote Desktop Users" -Member "Zezer"
+}
+
+$tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+$installerPath = "$env:TEMP\tailscale.msi"
+Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+Remove-Item $installerPath -Force
+
+$authKey = "<YOUR_TAILSCALE_AUTH_KEY>"
+& "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$authKey --hostname=VPS-Zezer --accept-routes --accept-dns
+Start-Process "$env:ProgramFiles\Tailscale\tailscaled.exe" -ArgumentList "--service" -NoNewWindow
+
+$tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+Write-Host "IP: $tsIP"
+Write-Host "User: Zezer"
+Write-Host "Password: GGG"
+
+while ($true) {
+    if ((Get-Service TermService).Status -ne 'Running') {
+        Start-Service TermService
+    }
+    $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+    if ($tsStatus -notmatch "Logged in") {
+        & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$authKey --hostname=VPS-Zezer --accept-routes --accept-dns
+    }
+    Start-Sleep -Seconds 300
+}
