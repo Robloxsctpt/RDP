@@ -1,0 +1,43 @@
+name: RDP 3-Day Setup
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-setup:
+    runs-on: windows-latest
+    timeout-minutes: 4320   # 3 วัน
+
+    steps:
+      - name: Configure RDP
+        run: |
+          # เปิด Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          # เปิด NLA
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -Force
+          # เปิด Firewall port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          # รีสตาร์ท Remote Desktop Service
+          Restart-Service -Name TermService -Force
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=rdp-runner
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          echo "Tailscale IP: $tsIP"
+          echo "Use the current runner user (cannot create KHUNASIN on GitHub Actions)"
+
+      - name: Keep Connection Active
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - ใช้ Ctrl+C เพื่อหยุด workflow"
+              Start-Sleep -Seconds 300
+          }
