@@ -1,0 +1,87 @@
+name: RDP Setup
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup RDP User and Tailscale
+        shell: pwsh
+        run: |
+          $username = "KHUNASIN"
+          $passwordPlain = "0932946455"
+          $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+
+          # ตรวจสอบว่ามี user อยู่หรือไม่
+          $user = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+          if (-not $user) {
+              Write-Host "Creating user $username..."
+              New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+          } else {
+              Write-Host "User $username already exists."
+          }
+
+          # เพิ่มเข้า group
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+
+          # เปิด RDP และ firewall
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                           -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "SecurityLayer" -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-KHUNASIN"
+          netsh advfirewall firewall add rule name="RDP-KHUNASIN" dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+          # ติดตั้ง Tailscale
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+          # เชื่อมต่อ Tailscale
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$username
+
+          # เก็บ Tailscale IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+
+          echo "RDP_CREDS=User: $username | Password: $passwordPlain" >> $env:GITHUB_ENV
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+          # แสดงข้อมูล RDP
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $tsIP"
+          Write-Host "Username: $username"
+          Write-Host "Password: $passwordPlain"
+          Write-Host "==================`n"
+
+          # Loop ต่อเนื่อง
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
