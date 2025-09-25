@@ -1,0 +1,54 @@
+name: One-Time RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp-once:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Check if workflow already used
+        run: |
+          if [ -f .used.flag ]; then
+            echo "Workflow already used. Exiting."
+            exit 1
+          fi
+
+      - name: Setup Temporary RDP User
+        run: |
+          $Password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 12 | % {[char]$_})
+          $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
+          New-LocalUser -Name "RDP_Temp" -Password $SecurePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP_Temp"
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP_Temp"
+          Write-Host "RDP User created: RDP_Temp | Password: $Password"
+
+      - name: Open RDP Port
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          netsh advfirewall firewall add rule name="Allow-RDP" dir=in action=allow protocol=TCP localport=3389
+
+      - name: Keep RDP Active for 1 Hour
+        run: |
+          Write-Host "RDP active for 1 hour..."
+          Start-Sleep -Seconds 3600
+
+      - name: Disable RDP After Use
+        run: |
+          Remove-LocalUser -Name "RDP_Temp"
+          netsh advfirewall firewall add rule name="Block-RDP-After-Use" dir=in action=block protocol=TCP localport=3389
+          Write-Host "RDP expired. User deleted and port blocked."
+
+      - name: Mark Workflow as Used
+        run: |
+          echo "Workflow used" > .used.flag
+          git config user.name "gh-actions"
+          git config user.email "gh-actions@users.noreply.github.com"
+          git add .used.flag
+          git commit -m "Mark workflow as used"
+          git push
