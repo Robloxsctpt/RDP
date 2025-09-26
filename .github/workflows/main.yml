@@ -1,0 +1,82 @@
+# ===========================
+# rdp_setup.ps1
+# ===========================
+
+# ===== 1. User คงที่ =====
+$username = "KHUNASIN"
+$passwordPlain = "0932946455"
+$securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+
+if (-not (Get-LocalUser -Name $username -ErrorAction SilentlyContinue)) {
+    New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+    Add-LocalGroupMember -Group "Administrators" -Member $username
+    Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+    Write-Host "User $username created."
+} else {
+    Write-Host "User $username already exists."
+}
+
+# ===== 2. เปิด RDP และ Firewall =====
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+
+netsh advfirewall firewall delete rule name="RDP-KHUNASIN"
+netsh advfirewall firewall add rule name="RDP-KHUNASIN" dir=in action=allow protocol=TCP localport=3389
+
+Restart-Service -Name TermService -Force
+Write-Host "RDP and firewall configured."
+
+# ===== 3. ติดตั้ง Tailscale =====
+$tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+$installerPath = "$env:TEMP\tailscale.msi"
+
+if (-not (Test-Path "$env:ProgramFiles\Tailscale\tailscale.exe")) {
+    Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+    Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+    Remove-Item $installerPath -Force
+    Write-Host "Tailscale installed."
+} else {
+    Write-Host "Tailscale already installed."
+}
+
+# ===== 4. เชื่อมต่อ Tailscale =====
+$authKey = "YOUR_TAILSCALE_AUTH_KEY"  # <-- ใส่ AuthKey ของคุณ
+& "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$authKey --hostname=$username
+
+# ตรวจสอบ IP
+$tsIP = $null
+$retries = 0
+while (-not $tsIP -and $retries -lt 10) {
+    $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+    Start-Sleep -Seconds 5
+    $retries++
+}
+if (-not $tsIP) { Write-Error "Tailscale IP not assigned."; exit 1 }
+
+Write-Host "Tailscale IP: $tsIP"
+
+# ===== 5. ตั้ง Task Scheduler ให้รันอัตโนมัติ =====
+$taskName = "AutoRDP-Tailscale"
+if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) {
+    $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-File `"$PSCommandPath`""
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+    Register-ScheduledTask -Action $action -Trigger $trigger -TaskName $taskName -Description "Persistent RDP + Tailscale" -Principal $principal -Force
+    Write-Host "Scheduled Task created for persistence."
+} else {
+    Write-Host "Scheduled Task already exists."
+}
+
+# ===== 6. แสดงข้อมูล RDP =====
+Write-Host "`n=== RDP ACCESS ==="
+Write-Host "Address: $tsIP"
+Write-Host "Username: $username"
+Write-Host "Password: $passwordPlain"
+Write-Host "==================`n"
+
+# ===== 7. Loop แสดงสถานะต่อเนื่อง =====
+while ($true) {
+    Write-Host "[$(Get-Date)] RDP Active - Press Ctrl+C to exit"
+    Start-Sleep -Seconds 300
+}
